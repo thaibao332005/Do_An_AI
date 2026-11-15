@@ -12,8 +12,8 @@ CAMERA_SOURCE = "webcam"
 WEBCAM_INDEX = 0
 
 # Nếu chọn "esp32": URL luồng stream MJPEG của ESP32-CAM
-# Ví dụ: "http://192.168.1.100:81/stream" hoặc "http://192.168.1.100/cam-hi.jpg"
-ESP32_STREAM_URL = "http://192.168.1.50:81/stream"
+# Ví dụ: "http://192.168.4.1:81/stream" (Chế độ tự phát Wi-Fi AP) hoặc IP Hotspot
+ESP32_STREAM_URL = "http://192.168.4.1:81/stream"
 
 # Nếu chọn "video": Đường dẫn tới file video để thử nghiệm
 VIDEO_TEST_PATH = "assets/test_driver.mp4"
@@ -61,3 +61,10 @@ CSV_LOG_PATH = os.path.join(LOGS_DIR, "drowsiness_log.csv")
 
 ALARM_SOUND_PATH = os.path.join(ASSETS_DIR, "alarm.wav")
 BEEP_SOUND_PATH = os.path.join(ASSETS_DIR, "beep.wav")
+
+# 6. CẤU HÌNH CÒI BÁO ĐỘNG PHẦN CỨNG (ESP8266 + PASSIVE BUZZER 5V)
+ENABLE_HARDWARE_ALERT = True           # Cho phép gửi lệnh tới còi phần cứng ESP8266
+HARDWARE_ALERT_TYPE = "serial"         # "serial" (qua cáp USB) hoặc "wifi" (qua HTTP)
+HARDWARE_SERIAL_PORT = "COM8"          # Cổng COM của ESP8266 khi cắm cáp USB (đã cấu hình COM8)
+HARDWARE_SERIAL_BAUD = 115200          # Tốc độ baudrate
+HARDWARE_WIFI_URL = "http://192.168.1.100" # URL của ESP8266 nếu dùng qua Wi-Fi

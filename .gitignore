@@ -1,38 +1,69 @@
-# Byte-compiled / optimized / DLL files
+# ============================================================
+# .gitignore cho dự án AI Driver Drowsiness Detection
+# ============================================================
+
+# --- Python ---
 __pycache__/
 *.py[cod]
-*$py.class
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.whl
 
-# C/C++ build artifacts
-*.o
-*.obj
-*.hex
-*.elf
-
-# Environment & Virtual Environments
-.env
-.venv
-env/
+# --- Môi trường ảo Python ---
 venv/
-ENV/
-env.bak/
-venv.bak/
+env/
+.venv/
+.env/
 
-# IDE & Editor files
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# Logs & temporary run data
+# --- Log & Snapshot ---
+logs/snapshots/*.jpg
+logs/snapshots/*.jpeg
+logs/snapshots/*.png
 logs/drowsiness_log.csv
-logs/snapshots/*
+
+# --- Giữ cấu trúc thư mục logs ---
 !logs/snapshots/.gitkeep
 
-# Operating System Files
+# --- File test tạm ---
+test_buzzer.py
+
+# --- IDE & Editor ---
+.vscode/
+.idea/
+*.suo
+*.user
+*.swp
+*~
+
+# --- Arduino build cache ---
+*.elf
+*.bin
+*.hex
+esp32/esp32_cam_stream/build/
+esp8266/esp8266_buzzer_alarm/build/
+
+# --- Windows ---
 Thumbs.db
-ehthumbs.db
-Desktop.ini
+desktop.ini
 $RECYCLE.BIN/
+
+# --- macOS ---
 .DS_Store
+.AppleDouble
+
+# --- File media lớn ---
+assets/test_driver.mp4
+*.avi
+*.mov
+*.mkv
+
+# --- Sensitive config (mật khẩu Wi-Fi nằm trong .ino, không bao gồm vào repo public nếu cần) ---
+# Nếu muốn ẩn file .ino khỏi public thì bỏ comment dòng dưới:
+# esp8266/esp8266_buzzer_alarm/esp8266_buzzer_alarm.ino
+

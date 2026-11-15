@@ -22,6 +22,15 @@ class CameraStream:
         self.ret: bool = False
         
         self.is_running: bool = False
+        self.is_demo: bool = False
+        self.is_http: bool = False
+        self.http_mode: str = ""  # "mjpeg" hoặc "snapshot"
+        self.http_stream = None
+        self.snapshot_url: str = ""
+        self.is_serial: bool = False
+        self.serial_port = None
+        self.bytes_buffer = b""
+        
         self.lock = threading.Lock()
         self.thread: Optional[threading.Thread] = None
         
@@ -40,18 +49,32 @@ class CameraStream:
             return
             
         self.is_demo = False
+        self.is_http = False
+        self.is_serial = False
+        
         # Nếu là chuỗi số, chuyển sang int (cho webcam)
         if isinstance(self.source, str) and self.source.isdigit():
             self.source = int(self.source)
             
-        # Mở camera với OpenCV
+        # Mở camera với OpenCV cho Webcam hoặc file video
         if isinstance(self.source, int):
             # Với Webcam trên Windows, dùng DSHOW để khởi động nhanh hơn
             self.cap = cv2.VideoCapture(self.source, cv2.CAP_DSHOW)
             if not self.cap.isOpened():
                 self.cap = cv2.VideoCapture(self.source)
+        elif isinstance(self.source, str) and (self.source.startswith("http://") or self.source.startswith("https://")):
+            # Luồng ESP32-CAM qua mạng Wi-Fi: Thử đọc trực tiếp qua urllib (hỗ trợ cả MJPEG Stream và Snapshot /capture)
+            if self._init_http_stream():
+                return
+            # Nếu urllib không đọc được, fallback thử lại bằng OpenCV VideoCapture
+            print(f"[CAMERA] Thử kết nối fallback bằng OpenCV VideoCapture: {self.source}")
+            self.cap = cv2.VideoCapture(self.source)
+        elif isinstance(self.source, str) and (self.source.upper().startswith("COM") or "/dev/" in self.source):
+            # ESP32-CAM cắm trực tiếp qua cáp USB Serial
+            if self._init_serial_stream():
+                return
         else:
-            # Luồng ESP32-CAM hoặc file video
+            # File video
             self.cap = cv2.VideoCapture(self.source)
             
         if self.cap and self.cap.isOpened():
@@ -67,12 +90,154 @@ class CameraStream:
         else:
             print(f"[CAMERA LỖI] Không thể mở nguồn camera: {self.source}")
 
+    def _init_http_stream(self) -> bool:
+        """Kết nối trực tiếp tới ESP32-CAM: tự động nhận diện cả MJPEG Stream (/stream) lẫn Snapshot (/capture)"""
+        import urllib.request
+        from urllib.parse import urlparse
+        
+        raw_url = str(self.source).strip()
+        if not raw_url.startswith("http://") and not raw_url.startswith("https://"):
+            raw_url = "http://" + raw_url
+            
+        parsed = urlparse(raw_url)
+        host = parsed.hostname or raw_url.replace("http://", "").split("/")[0].split(":")[0]
+        
+        # Danh sách các endpoint tiềm năng theo thứ tự ưu tiên
+        candidates = [raw_url]
+        if host:
+            candidates.extend([
+                f"http://{host}:81/stream",
+                f"http://{host}/capture",
+                f"http://{host}/stream",
+                f"http://{host}:80/stream",
+                f"http://{host}:80/capture",
+                f"http://{host}/cam-hi.jpg",
+                f"http://{host}:81",
+                f"http://{host}"
+            ])
+            
+        seen = set()
+        unique_candidates = []
+        for c in candidates:
+            if c not in seen:
+                seen.add(c)
+                unique_candidates.append(c)
+                
+        for target_url in unique_candidates:
+            print(f"[CAMERA] Đang thử kết nối: {target_url}")
+            resp = None
+            try:
+                req = urllib.request.Request(
+                    target_url, 
+                    headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+                )
+                resp = urllib.request.urlopen(req, timeout=2.0)
+                content_type = resp.headers.get_content_type() or ""
+                
+                # 1. Nếu là trang HTML (CameraWebServer UI), đóng ngay để không giữ socket
+                if 'html' in content_type:
+                    resp.close()
+                    continue
+                    
+                # 2. Nếu là ảnh đơn JPEG / Snapshot (/capture)
+                if 'jpeg' in content_type or 'jpg' in content_type or target_url.endswith('/capture') or target_url.endswith('/cam-hi.jpg'):
+                    data = resp.read()
+                    resp.close()
+                    if data:
+                        frame = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
+                        if frame is not None:
+                            if self.width and self.height and (frame.shape[1] != self.width or frame.shape[0] != self.height):
+                                frame = cv2.resize(frame, (self.width, self.height))
+                            self.frame = frame
+                            self.ret = True
+                            self.is_http = True
+                            self.http_mode = "snapshot"
+                            self.snapshot_url = target_url
+                            self.source = target_url
+                            print(f"[CAMERA] Kết nối ESP32-CAM Snapshot (/capture) THÀNH CÔNG tại: {target_url}!")
+                            return True
+
+                # 3. Nếu là luồng MJPEG liên tục (multipart/x-mixed-replace)
+                buffer = b""
+                start_read = time.time()
+                while time.time() - start_read < 2.5:
+                    chunk = resp.read(2048)
+                    if not chunk:
+                        break
+                    buffer += chunk
+                    a = buffer.find(b'\xff\xd8')
+                    b = buffer.find(b'\xff\xd9')
+                    if a != -1 and b != -1:
+                        jpg = buffer[a:b+2]
+                        self.bytes_buffer = buffer[b+2:]
+                        frame = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
+                        if frame is not None:
+                            if self.width and self.height and (frame.shape[1] != self.width or frame.shape[0] != self.height):
+                                frame = cv2.resize(frame, (self.width, self.height))
+                            self.frame = frame
+                            self.ret = True
+                            self.is_http = True
+                            self.http_mode = "mjpeg"
+                            self.http_stream = resp
+                            self.source = target_url
+                            print(f"[CAMERA] Kết nối ESP32-CAM MJPEG Stream THÀNH CÔNG tại: {target_url}!")
+                            return True
+                            
+                resp.close()
+            except Exception:
+                if resp:
+                    try:
+                        resp.close()
+                    except Exception:
+                        pass
+                continue
+                
+        return False
+
+    def _init_serial_stream(self) -> bool:
+        """Kết nối trực tiếp ESP32-CAM qua cáp USB Serial (cổng COM)"""
+        try:
+            import serial
+            port = str(self.source).upper().strip()
+            print(f"[CAMERA] Đang mở kết nối USB Serial tại {port}...")
+            for baud in [115200, 921600, 2000000]:
+                try:
+                    ser = serial.Serial(port, baudrate=baud, timeout=1.0)
+                    ser.reset_input_buffer()
+                    buf = b""
+                    start = time.time()
+                    while time.time() - start < 3.0:
+                        chunk = ser.read(4096)
+                        if chunk:
+                            buf += chunk
+                            a = buf.find(b'\xff\xd8')
+                            b = buf.find(b'\xff\xd9')
+                            if a != -1 and b != -1:
+                                jpg = buf[a:b+2]
+                                frame = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
+                                if frame is not None:
+                                    if self.width and self.height and (frame.shape[1] != self.width or frame.shape[0] != self.height):
+                                        frame = cv2.resize(frame, (self.width, self.height))
+                                    self.serial_port = ser
+                                    self.is_serial = True
+                                    self.ret = True
+                                    self.frame = frame
+                                    self.bytes_buffer = buf[b+2:]
+                                    print(f"[CAMERA] Kết nối USB Serial {port} (Baud {baud}) THÀNH CÔNG!")
+                                    return True
+                    ser.close()
+                except Exception:
+                    continue
+        except Exception as e:
+            print(f"[CAMERA LỖI] Không thể mở cổng Serial: {e}")
+        return False
+
     def start(self) -> "CameraStream":
         """Khởi động luồng đọc camera ngầm"""
         if self.is_running:
             return self
         
-        if self.cap is None or not self.cap.isOpened():
+        if (self.cap is None or not self.cap.isOpened()) and not self.is_http and not self.is_serial and not self.is_demo:
             self._init_camera()
             
         self.is_running = True
@@ -90,6 +255,66 @@ class CameraStream:
                     self.ret = True
                     self.frame = frame
                 time.sleep(0.033)  # ~30 FPS
+            elif getattr(self, "is_http", False):
+                if getattr(self, "http_mode", "") == "snapshot":
+                    # Đọc theo cơ chế Snapshot Polling (siêu ổn định, không lo nghẽn socket)
+                    try:
+                        import urllib.request
+                        req = urllib.request.Request(self.snapshot_url, headers={'User-Agent': 'Mozilla/5.0'})
+                        with urllib.request.urlopen(req, timeout=1.2) as resp:
+                            data = resp.read()
+                            if data:
+                                frame = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
+                                if frame is not None:
+                                    if self.width and self.height and (frame.shape[1] != self.width or frame.shape[0] != self.height):
+                                        frame = cv2.resize(frame, (self.width, self.height))
+                                    with self.lock:
+                                        self.ret = True
+                                        self.frame = frame
+                        time.sleep(0.02)  # ~30 FPS
+                    except Exception:
+                        time.sleep(0.05)
+                elif self.http_stream:
+                    # Đọc theo luồng MJPEG liên tục
+                    try:
+                        chunk = self.http_stream.read(4096)
+                        if not chunk:
+                            time.sleep(0.01)
+                            continue
+                        self.bytes_buffer += chunk
+                        a = self.bytes_buffer.find(b'\xff\xd8')
+                        b = self.bytes_buffer.find(b'\xff\xd9')
+                        if a != -1 and b != -1:
+                            jpg = self.bytes_buffer[a:b+2]
+                            self.bytes_buffer = self.bytes_buffer[b+2:]
+                            frame = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
+                            if frame is not None:
+                                if self.width and self.height and (frame.shape[1] != self.width or frame.shape[0] != self.height):
+                                    frame = cv2.resize(frame, (self.width, self.height))
+                                with self.lock:
+                                    self.ret = True
+                                    self.frame = frame
+                    except Exception:
+                        time.sleep(0.02)
+            elif getattr(self, "is_serial", False) and getattr(self, "serial_port", None):
+                try:
+                    chunk = self.serial_port.read(4096)
+                    if chunk:
+                        self.bytes_buffer += chunk
+                        a = self.bytes_buffer.find(b'\xff\xd8')
+                        b = self.bytes_buffer.find(b'\xff\xd9')
+                        if a != -1 and b != -1:
+                            jpg = self.bytes_buffer[a:b+2]
+                            self.bytes_buffer = self.bytes_buffer[b+2:]
+                            frame = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
+                            if frame is not None:
+                                if self.width and self.height and (frame.shape[1] != self.width or frame.shape[0] != self.height):
+                                    frame = cv2.resize(frame, (self.width, self.height))
+                                with self.lock:
+                                    self.ret = True
+                                    self.frame = frame
+                except Exception:
+                    time.sleep(0.01)
             elif self.cap and self.cap.isOpened():
                 ret, frame = self.cap.read()
                 if ret and frame is not None:
@@ -220,6 +445,20 @@ class CameraStream:
         self.is_running = False
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=1.0)
+            
+        if getattr(self, "http_stream", None):
+            try:
+                self.http_stream.close()
+            except Exception:
+                pass
+            self.http_stream = None
+            
+        if getattr(self, "serial_port", None):
+            try:
+                self.serial_port.close()
+            except Exception:
+                pass
+            self.serial_port = None
             
         if self.cap and self.cap.isOpened():
             self.cap.release()

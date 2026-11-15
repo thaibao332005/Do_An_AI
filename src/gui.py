@@ -105,6 +105,7 @@ class DrowsinessDetectionGUI(ctk.CTk):
         self.show_contours_var = tk.BooleanVar(value=True)
         self.show_hud_overlay_var = tk.BooleanVar(value=False)
         self.mute_var = tk.BooleanVar(value=False)
+        self.hw_port_var = tk.StringVar(value=getattr(config, 'HARDWARE_SERIAL_PORT', 'COM3'))
 
         # Khung hình & dữ liệu AI mới nhất (Thread-safe)
         self.latest_frame = None
@@ -309,6 +310,97 @@ class DrowsinessDetectionGUI(ctk.CTk):
             command=self._test_alarm
         )
         self.btn_test_alarm.pack(side="right", padx=(4, 0))
+
+        # Khung cấu hình Còi ngoài ESP8266 (USB COM)
+        self.hw_frame = ctk.CTkFrame(self.left_sidebar, fg_color="#131620", corner_radius=8)
+        self.hw_frame.pack(fill="x", padx=10, pady=(4, 14))
+
+        self.lbl_hw_title = ctk.CTkLabel(
+            self.hw_frame,
+            text="⚡ CÒI NGOÀI ESP8266 (USB COM):",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="#38BDF8"
+        )
+        self.lbl_hw_title.pack(anchor="w", padx=10, pady=(6, 2))
+
+        self.hw_port_row = ctk.CTkFrame(self.hw_frame, fg_color="transparent")
+        self.hw_port_row.pack(fill="x", padx=10, pady=(2, 4))
+
+        detected_ports = AlertSystem.get_available_ports() if AlertSystem else []
+        port_values = detected_ports if detected_ports else ["COM8", "COM3", "COM4", "COM5", "COM7"]
+        if "COM8" in port_values:
+            self.hw_port_var.set("COM8")
+        elif detected_ports:
+            self.hw_port_var.set(detected_ports[0])
+        elif self.hw_port_var.get() not in port_values:
+            port_values.insert(0, self.hw_port_var.get())
+
+        self.combo_hw_port = ctk.CTkComboBox(
+            self.hw_port_row,
+            values=port_values,
+            variable=self.hw_port_var,
+            width=140,
+            command=self._on_hw_port_changed
+        )
+        self.combo_hw_port.pack(side="left", fill="x", expand=True, padx=(0, 4))
+
+        self.btn_refresh_ports = ctk.CTkButton(
+            self.hw_port_row,
+            text="🔄",
+            width=36,
+            height=28,
+            fg_color="#203A43",
+            hover_color="#2C5364",
+            command=self._refresh_hw_ports
+        )
+        self.btn_refresh_ports.pack(side="right")
+
+        self.btn_test_hw = ctk.CTkButton(
+            self.hw_frame,
+            text="📢 Bấm Test Còi ESP8266",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color="#0D47A1",
+            hover_color="#1565C0",
+            height=28,
+            command=self._test_hardware_buzzer
+        )
+        self.btn_test_hw.pack(fill="x", padx=10, pady=(4, 4))
+
+        # Nút kết nối thủ công còi vào cổng COM
+        self.btn_row2 = ctk.CTkFrame(self.hw_frame, fg_color="transparent")
+        self.btn_row2.pack(fill="x", padx=10, pady=(0, 8))
+
+        self.btn_connect_hw = ctk.CTkButton(
+            self.btn_row2,
+            text="🔌 Kết Nối Còi",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color="#1B5E20",
+            hover_color="#2E7D32",
+            height=28,
+            width=120,
+            command=self._connect_hardware_buzzer
+        )
+        self.btn_connect_hw.pack(side="left", padx=(0, 4))
+
+        self.btn_disconnect_hw = ctk.CTkButton(
+            self.btn_row2,
+            text="⛔ Ngắt Kết Nối",
+            font=ctk.CTkFont(size=11),
+            fg_color="#4A1515",
+            hover_color="#6B1D1D",
+            height=28,
+            width=120,
+            command=self._disconnect_hardware_buzzer
+        )
+        self.btn_disconnect_hw.pack(side="right", padx=(4, 0))
+
+        self.lbl_hw_status = ctk.CTkLabel(
+            self.hw_frame,
+            text="⚪ Chưa kết nối còi",
+            font=ctk.CTkFont(size=10),
+            text_color="#94A3B8"
+        )
+        self.lbl_hw_status.pack(anchor="center", pady=(0, 6))
 
         # ==========================================
         # 3. CỘT GIỮA: MÀN HÌNH VIDEO & STATUS BANNER
@@ -774,6 +866,83 @@ class DrowsinessDetectionGUI(ctk.CTk):
             self.alert.trigger_alarm()
             self.after(2000, self.alert.stop_alarm)
 
+    def _refresh_hw_ports(self):
+        ports = AlertSystem.get_available_ports() if AlertSystem else []
+        if not ports:
+            ports = ["COM8", "COM3", "COM4", "COM5", "COM6", "COM7"]
+        self.combo_hw_port.configure(values=ports)
+        if "COM8" in ports:
+            self.hw_port_var.set("COM8")
+            self._on_hw_port_changed("COM8")
+        elif ports:
+            self.hw_port_var.set(ports[0])
+            self._on_hw_port_changed(ports[0])
+
+    def _on_hw_port_changed(self, selected_port):
+        pass  # Không tự kết nối khi đổi combobox, chờ bấm nút Kết Nối thủ công
+
+    def _connect_hardware_buzzer(self):
+        """Kết nối thủ công còi NodeMCU vào cổng COM đang chọn"""
+        port = self.hw_port_var.get().strip()
+        if not self.alert:
+            return
+        # Thông báo đang kết nối
+        self.lbl_hw_status.configure(text=f"⏳ Đang kết nối {port}...", text_color="#FBBF24")
+        self.update_idletasks()
+
+        def _do_connect():
+            success = self.alert.init_hardware(port)
+            def _update_ui():
+                if success:
+                    self.lbl_hw_status.configure(
+                        text=f"🟢 Đã kết nối còi qua {port}",
+                        text_color="#00FF88"
+                    )
+                    self.btn_connect_hw.configure(fg_color="#2E7D32")
+                else:
+                    self.lbl_hw_status.configure(
+                        text=f"🔴 Thất bại — Kiểm tra cổng {port} & đóng Serial Monitor",
+                        text_color="#EF4444"
+                    )
+                    self.btn_connect_hw.configure(fg_color="#1B5E20")
+            self.after(0, _update_ui)
+        threading.Thread(target=_do_connect, daemon=True).start()
+
+    def _disconnect_hardware_buzzer(self):
+        """Ngắt kết nối an toàn còi NodeMCU khỏi ứng dụng"""
+        if self.alert and self.alert.serial_conn:
+            try:
+                self.alert._send_hardware_command("ALARM_OFF")
+                import time as _t; _t.sleep(0.1)
+                self.alert.serial_conn.close()
+                self.alert.serial_conn = None
+            except Exception:
+                pass
+        self.lbl_hw_status.configure(text="⚪ Chưa kết nối còi", text_color="#94A3B8")
+        self.btn_connect_hw.configure(fg_color="#1B5E20")
+
+    def _test_hardware_buzzer(self):
+        port = self.hw_port_var.get().strip()
+        if self.alert:
+            if not self.alert.serial_conn or not self.alert.serial_conn.is_open:
+                messagebox.showwarning(
+                    "Còi Ngoài NodeMCU",
+                    f"Chưa kết nối cổng {port}!\n\n"
+                    "Hãy bấm nút 🔌 Kết Nối Còi trước, sau đó bấm Test."
+                )
+                return
+            success = self.alert.test_hardware(port)
+            if success:
+                self.lbl_hw_status.configure(
+                    text=f"🟢 Test OK — {port} đang hoạt động",
+                    text_color="#00FF88"
+                )
+            else:
+                self.lbl_hw_status.configure(
+                    text=f"🔴 Test thất bại — Kiểm tra dây nối còi",
+                    text_color="#EF4444"
+                )
+
     def _on_threshold_slider_change(self):
         if self.detector:
             self.detector.ear_threshold = self.ear_threshold_var.get()
@@ -843,19 +1012,76 @@ class DrowsinessDetectionGUI(ctk.CTk):
                 return
             src = self.custom_video_path
 
-        try:
-            from camera_stream import CameraStream
-            self.stream = CameraStream(source=src, width=config.FRAME_WIDTH, height=config.FRAME_HEIGHT).start()
-        except Exception as e:
-            messagebox.showerror("Lỗi Camera", f"Không thể mở nguồn video ({src}):\n{e}\n\n💡 Mẹo: Bạn có thể chọn tab 'Demo Giả Lập' để chạy thử không cần camera.")
-            return
+        # Cập nhật giao diện: Đang kết nối
+        self.btn_start.configure(state="disabled")
+        self.sys_status_badge.configure(text="⏳ ĐANG KẾT NỐI CAMERA...", text_color="#FBBF24", fg_color="#332A15")
 
-        self.is_running = True
-        self.is_paused = False
-        self.eye_closed_counter = 0
-        self.yawn_counter = 0
-        self.head_drop_counter = 0
-        self.current_state = "NORMAL"
+        # Khởi tạo camera trong luồng riêng để giao diện KHÔNG BAO GIỜ bị đơ (Not Responding)
+        def _connect_worker():
+            try:
+                from camera_stream import CameraStream
+                stream = CameraStream(source=src, width=config.FRAME_WIDTH, height=config.FRAME_HEIGHT).start()
+                
+                # Kiểm tra xem camera có frame hợp lệ không
+                if not stream.ret and not getattr(stream, "is_demo", False):
+                    stream.stop()
+                    
+                    err_msg = f"Không thể kết nối hoặc nhận luồng hình ảnh từ:\n{src}\n\n"
+                    if str(src).startswith("http"):
+                        err_msg += (
+                            "🔍 CÁC NGUYÊN NHÂN THƯỜNG GẶP KHI DÙNG VỚI ESP32-CAM:\n\n"
+                            "1. ⚠️ BẠN ĐANG MỞ TAB TRÌNH DUYỆT XEM CAMERA:\n"
+                            "   -> ESP32-CAM chỉ chịu được 1 kết nối duy nhất tại một thời điểm!\n"
+                            "   👉 Hãy ĐÓNG HOÀN TOÀN tab Chrome/Edge/điện thoại đang xem camera trước khi bấm BẮT ĐẦU.\n\n"
+                            "2. ⚠️ DÁN THIẾU ĐUÔI :81/stream:\n"
+                            "   -> Ví dụ đúng: http://192.168.2.50:81/stream\n"
+                            "   -> Nếu chỉ dán http://192.168.2.50 thì đó là trang web cấu hình, không phải luồng video.\n\n"
+                            "3. ⚠️ MẠNG BỊ CHẶN HOẶC SAI IP:\n"
+                            "   -> Kiểm tra lại IP in ra trên Serial Monitor (Arduino IDE).\n"
+                            "   -> Nếu dùng Wi-Fi KTX mà router chặn, hãy phát Hotspot từ Laptop hoặc dùng chế độ AP Mode."
+                        )
+                    else:
+                        err_msg += "Vui lòng kiểm tra lại thiết bị camera hoặc quyền truy cập."
+                        
+                    def _show_err():
+                        self.btn_start.configure(state="normal")
+                        self.sys_status_badge.configure(text="● LỖI KẾT NỐI", text_color="#EF4444", fg_color="#3B1515")
+                        messagebox.showerror("Lỗi Kết Nối Camera", err_msg)
+                        self.sys_status_badge.configure(text="● HỆ THỐNG SẴN SÀNG", text_color="#38BDF8", fg_color="#0F283D")
+
+                    self.after(0, _show_err)
+                    return
+
+                # Kết nối thành công -> kích hoạt hệ thống giám sát
+                def _on_connected():
+                    self.stream = stream
+                    self.is_running = True
+                    self.is_paused = False
+                    self.eye_closed_counter = 0
+                    self.yawn_counter = 0
+                    self.head_drop_counter = 0
+                    self.current_state = "NORMAL"
+
+                    self.btn_start.configure(state="disabled")
+                    self.btn_pause.configure(state="normal", text="⏸ TẠM DỪNG", fg_color="#2B3A4A")
+                    self.btn_stop.configure(state="normal")
+                    self.sys_status_badge.configure(text="● ĐANG GIÁM SÁT", text_color="#00FF88", fg_color="#102E24")
+
+                    # Bắt đầu luồng xử lý AI
+                    self.processing_thread = threading.Thread(target=self._ai_worker_loop, daemon=True)
+                    self.processing_thread.start()
+
+                self.after(0, _on_connected)
+
+            except Exception as e:
+                def _show_exc():
+                    self.btn_start.configure(state="normal")
+                    self.sys_status_badge.configure(text="● HỆ THỐNG SẴN SÀNG", text_color="#38BDF8", fg_color="#0F283D")
+                    messagebox.showerror("Lỗi Camera", f"Không thể mở nguồn video ({src}):\n{e}\n\n💡 Mẹo: Bạn có thể chọn tab 'Demo Giả Lập' để chạy thử không cần camera.")
+
+                self.after(0, _show_exc)
+
+        threading.Thread(target=_connect_worker, daemon=True).start()
 
         # Cập nhật trạng thái nút bấm
         self.btn_start.configure(state="disabled")
@@ -907,6 +1133,8 @@ class DrowsinessDetectionGUI(ctk.CTk):
             self.detector.calib_ears.clear()
             self.detector.calib_mars.clear()
             self.lbl_tele_calib.configure(text="⚙️ Cân chỉnh: Đang thực hiện...", text_color="#FBBF24")
+        if self.alert:
+            self.alert.stop_alarm()
 
     def _ai_worker_loop(self):
         """Luồng chạy nền đọc video và chạy MediaPipe AI / Demo simulation"""
@@ -984,6 +1212,9 @@ class DrowsinessDetectionGUI(ctk.CTk):
             state = "NORMAL"
             if not analysis["is_calibrated"]:
                 state = "CALIBRATING"
+                self.eye_closed_counter = 0
+                self.head_drop_counter = 0
+                self.yawn_counter = 0
                 if self.alert:
                     self.alert.stop_alarm()
             elif analysis["face_detected"]:
@@ -997,25 +1228,25 @@ class DrowsinessDetectionGUI(ctk.CTk):
                 pitch_th = self.head_pitch_var.get()
                 yaw_th = self.head_yaw_var.get()
 
-                # Kiểm tra nhắm mắt
+                # 1. Kiểm tra nhắm mắt (Khi mắt mở ổn định thì reset về 0 ngay)
                 if ear < ear_th:
                     self.eye_closed_counter += 1
                 else:
-                    self.eye_closed_counter = max(0, self.eye_closed_counter - 1)
+                    self.eye_closed_counter = 0
 
-                # Kiểm tra ngáp
+                # 2. Kiểm tra ngáp (Khi miệng ngậm bình thường thì reset về 0 ngay)
                 if mar > mar_th:
                     self.yawn_counter += 1
                 else:
-                    self.yawn_counter = max(0, self.yawn_counter - 1)
+                    self.yawn_counter = 0
 
-                # Kiểm tra gục đầu / quay mặt
-                if pitch > pitch_th or abs(yaw) > yaw_th:
+                # 3. Kiểm tra gục đầu / quay mặt đi (Khi đầu nhìn thẳng bình thường thì reset về 0 ngay)
+                if pitch > pitch_th or pitch < config.HEAD_PITCH_UP_THRESHOLD or abs(yaw) > yaw_th:
                     self.head_drop_counter += 1
                 else:
-                    self.head_drop_counter = max(0, self.head_drop_counter - 1)
+                    self.head_drop_counter = 0
 
-                # Quyết định cảnh báo
+                # 4. Quyết định cảnh báo & ngắt còi ngay khi chỉ số ổn định
                 if self.eye_closed_counter >= self.ear_consec_var.get():
                     state = "DROWSY"
                     if self.alert:
@@ -1041,6 +1272,9 @@ class DrowsinessDetectionGUI(ctk.CTk):
                         self.alert.stop_alarm()
             else:
                 state = "NO_FACE"
+                self.eye_closed_counter = 0
+                self.head_drop_counter = 0
+                self.yawn_counter = 0
                 if self.alert:
                     self.alert.stop_alarm()
 

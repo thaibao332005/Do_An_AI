@@ -224,6 +224,9 @@ def main():
 
             if not analysis["is_calibrated"]:
                 current_state = "CALIBRATING"
+                eye_closed_counter = 0
+                head_drop_counter = 0
+                yawn_counter = 0
                 alert.stop_alarm()
             elif analysis["face_detected"]:
                 ear = analysis["ear"]
@@ -233,25 +236,25 @@ def main():
                 pitch = analysis["pitch"]
                 yaw = analysis["yaw"]
 
-                # 1. Kiểm tra nhắm mắt
+                # 1. Kiểm tra nhắm mắt (Khi mắt mở ổn định thì reset về 0 ngay)
                 if ear < ear_thresh:
                     eye_closed_counter += 1
                 else:
-                    eye_closed_counter = max(0, eye_closed_counter - 1)
+                    eye_closed_counter = 0
 
-                # 2. Kiểm tra ngáp
+                # 2. Kiểm tra ngáp (Khi miệng ngậm bình thường thì reset về 0 ngay)
                 if mar > mar_thresh:
                     yawn_counter += 1
                 else:
-                    yawn_counter = max(0, yawn_counter - 1)
+                    yawn_counter = 0
 
-                # 3. Kiểm tra gục đầu / quay mặt đi
-                if pitch > config.HEAD_PITCH_DOWN_THRESHOLD or abs(yaw) > config.HEAD_YAW_THRESHOLD:
+                # 3. Kiểm tra gục đầu / quay mặt đi (Khi đầu nhìn thẳng bình thường thì reset về 0 ngay)
+                if pitch > config.HEAD_PITCH_DOWN_THRESHOLD or pitch < config.HEAD_PITCH_UP_THRESHOLD or abs(yaw) > config.HEAD_YAW_THRESHOLD:
                     head_drop_counter += 1
                 else:
-                    head_drop_counter = max(0, head_drop_counter - 1)
+                    head_drop_counter = 0
 
-                # 4. Máy trạng thái quyết định cảnh báo (Decision Engine)
+                # 4. Máy trạng thái quyết định cảnh báo & ngắt còi ngay khi chỉ số ổn định
                 if eye_closed_counter >= config.EAR_CONSEC_FRAMES:
                     current_state = "DROWSY"
                     alert.trigger_alarm()
@@ -273,6 +276,9 @@ def main():
                     alert.stop_alarm()
             else:
                 current_state = "NO_FACE"
+                eye_closed_counter = 0
+                head_drop_counter = 0
+                yawn_counter = 0
                 alert.stop_alarm()
 
             # Vẽ các đường nét AI lên frame
